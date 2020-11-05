@@ -1,4 +1,5 @@
-/*!
+/*! Network Time Protocol (NTP)
+
 # Example
 Shows how to use the ntp library to fetch the current time according
 to the requested ntp server.
@@ -40,31 +41,42 @@ pub mod unix_time;
 /// Send a blocking request to an ntp server with a hardcoded 5 second timeout.
 ///
 ///   `addr` can be any valid socket address
-///   returns an error if the server cannot be reached or the response is invalid.
 ///
+/// Returns an error if the server cannot be reached or the response is invalid.
+///
+/// If `addr` resolves to multiple IP addresses, they are tried in order until
+/// a request succeeds.
+/// If all requests fail, the last error is returned.
 pub fn request<A: ToSocketAddrs>(addr: A) -> io::Result<protocol::Packet> {
-    let addrs: Vec<_> = addr.to_socket_addrs()?.collect();
+    let mut last_err = None;
 
-    // The call to send_to in request_with_bind_addr will send packets to 
-    // the first IP in addr only, even if the host resolved to multiple IPs.
-    // Thus it is sufficient to look at the first IP to decide between
-    // IPv4 and IPv6.
-    let bind_addr = match addrs.first() {
-        Some(SocketAddr::V4(_)) | None => Ipv4Addr::UNSPECIFIED.into(),
-        Some(SocketAddr::V6(_)) => Ipv6Addr::UNSPECIFIED.into(),
-    };
+    for addr in addr.to_socket_addrs()? {
+        let bind_addr = match addr {
+            SocketAddr::V4(_) => Ipv4Addr::UNSPECIFIED.into(),
+            SocketAddr::V6(_) => Ipv6Addr::UNSPECIFIED.into(),
+        };
 
-    request_with_bind_addr(addrs.as_slice(), bind_addr)
+        match request_with_bind_addr(addr, bind_addr) {
+            Ok(packet) => return Ok(packet),
+            Err(err) => last_err = Some(err),
+        }
+    }
+
+    match last_err {
+        Some(err) => Err(err),
+        None => Err(io::Error::new(io::ErrorKind::NotFound, format!("Address resolved to empty")))
+    }
 }
 
 /// Send a blocking request to an ntp server with a hardcoded 5 second timeout.
 ///
 ///   `addr` can be any valid socket address
 ///   `bind_addr` specifies the client IP to send packets from
-///   returns an error if the server cannot be reached or the response is invalid.
 ///
-///   **TODO**: remove hardcoded timeout
-pub fn request_with_bind_addr<A: ToSocketAddrs>(addr: A, bind_addr: IpAddr) -> io::Result<protocol::Packet> {
+/// Returns an error if the server cannot be reached or the response is invalid.
+/// This will also fail when `addr` and `bind_addr` are not of the same IP version.
+// **TODO**: remove hardcoded timeout
+pub fn request_with_bind_addr(addr: SocketAddr, bind_addr: IpAddr) -> io::Result<protocol::Packet> {
     // Create a packet for requesting from an NTP server as a client.
     let mut packet = {
         let leap_indicator = protocol::LeapIndicator::default();
