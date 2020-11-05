@@ -30,7 +30,7 @@ extern crate log;
 extern crate byteorder;
 
 use protocol::{ReadBytes, ConstPackedSizeBytes, WriteBytes};
-use std::io;
+use std::{io, net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr}};
 use std::net::{ToSocketAddrs, UdpSocket};
 use std::time::Duration;
 
@@ -42,8 +42,29 @@ pub mod unix_time;
 ///   `addr` can be any valid socket address
 ///   returns an error if the server cannot be reached or the response is invalid.
 ///
-///   **TODO**: remove hardcoded timeout
 pub fn request<A: ToSocketAddrs>(addr: A) -> io::Result<protocol::Packet> {
+    let addrs: Vec<_> = addr.to_socket_addrs()?.collect();
+
+    // The call to send_to in request_with_bind_addr will send packets to 
+    // the first IP in addr only, even if the host resolved to multiple IPs.
+    // Thus it is sufficient to look at the first IP to decide between
+    // IPv4 and IPv6.
+    let bind_addr = match addrs.first() {
+        Some(SocketAddr::V4(_)) | None => Ipv4Addr::UNSPECIFIED.into(),
+        Some(SocketAddr::V6(_)) => Ipv6Addr::UNSPECIFIED.into(),
+    };
+
+    request_with_bind_addr(addrs.as_slice(), bind_addr)
+}
+
+/// Send a blocking request to an ntp server with a hardcoded 5 second timeout.
+///
+///   `addr` can be any valid socket address
+///   `bind_addr` specifies the client IP to send packets from
+///   returns an error if the server cannot be reached or the response is invalid.
+///
+///   **TODO**: remove hardcoded timeout
+pub fn request_with_bind_addr<A: ToSocketAddrs>(addr: A, bind_addr: IpAddr) -> io::Result<protocol::Packet> {
     // Create a packet for requesting from an NTP server as a client.
     let mut packet = {
         let leap_indicator = protocol::LeapIndicator::default();
@@ -82,7 +103,7 @@ pub fn request<A: ToSocketAddrs>(addr: A) -> io::Result<protocol::Packet> {
     (&mut bytes[..]).write_bytes(&packet)?;
 
     // Create the socket from which we will send the packet.
-    let sock = UdpSocket::bind("0.0.0.0:0")?;
+    let sock = UdpSocket::bind(SocketAddr::new(bind_addr, 0))?;
     sock.set_read_timeout(Some(Duration::from_secs(5)))?;
     sock.set_write_timeout(Some(Duration::from_secs(5)))?;
 
